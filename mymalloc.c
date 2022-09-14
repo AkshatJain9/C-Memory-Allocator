@@ -105,7 +105,7 @@ MetaBlock* initialise() {
 
 MetaBlock* getRightPointer(MetaBlock* block) {
   if (block == NULL) {
-    // printf("The left boundary was null, so returning NULL\n");
+    printf("The left boundary was null, so returning NULL\n");
     return NULL;
   }
   // printf("RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\n");
@@ -122,12 +122,6 @@ MetaBlock* getRightPointer(MetaBlock* block) {
   // printf("RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\n");
   return new;
 }
-
-// MetaBlock* getNextFree(MetaBlock* block) {
-//   PointerBlock* ptrs = getPointers(block);
-//   MetaBlock* out = ptrs->next;
-//   return out;
-// }
 
 // Splits blocks into 2, updating size tag OF SECOND BLOCK ONLY
 MetaBlock* splitBlock(MetaBlock* curr, size_t size) {
@@ -254,6 +248,30 @@ bool isAllocated(void* ptr) {
 }
 
 
+MetaBlock* coalesce(MetaBlock* curr) {
+  MetaBlock* leftNeighbour = (MetaBlock*) (((size_t) curr) - sizeof(MetaBlock));
+  MetaBlock* rightNeighbour = (MetaBlock*) (((size_t) curr) + curr->size);
+
+  MetaBlock* root = curr;
+  size_t newSize = curr->size;
+
+  if (rightNeighbour->size < kMemorySize && !(rightNeighbour->size & 1)) {
+    newSize += rightNeighbour->size;
+  }
+
+  if (leftNeighbour->size < kMemorySize && !(leftNeighbour->size & 1)) {
+    newSize += leftNeighbour->size;
+    root = (MetaBlock*) (((size_t) leftNeighbour) - leftNeighbour->size + sizeof(MetaBlock));
+  }
+
+  root->size = newSize;
+  MetaBlock* coalescedRight = getRightPointer(root);
+  coalescedRight->size = newSize;
+
+  return root;
+}
+
+
 void my_free(void *ptr)
 {
   // printf("**************************ENTERING MYFREE**********************\n");
@@ -272,14 +290,16 @@ void my_free(void *ptr)
   // assert(toRemove != freeList);
 
   // printf("The block being cleared: %zu\n", (size_t) toRemove);
+  // printf("The block being cleared's size: %zu\n", toRemove->size);
 
   // clear out last bit
-  toRemove->size = toRemove->size - 1;//
+  toRemove->size = toRemove->size - 1;
   MetaBlock* toRemoveRight = getRightPointer(toRemove);
+  toRemoveRight->size = toRemoveRight->size - 1;
+
+  toRemove = coalesce(toRemove);
+
   PointerBlock* toRemovePointers = getPointers(toRemove);
-
-  toRemoveRight->size = toRemoveRight->size - 1;//
-
   toRemovePointers->prev = NULL;
   toRemovePointers->next = freeList;
 
@@ -290,5 +310,6 @@ void my_free(void *ptr)
   freeListPointers->prev = toRemove;
 
   freeList = toRemove;
+  // printf("FreeListSize After Freeing: %zu\n", freeList->size);
   // printf("**************************EXITING MYFREE**********************\n");
 }
