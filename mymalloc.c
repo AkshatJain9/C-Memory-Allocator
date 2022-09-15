@@ -34,10 +34,7 @@ const size_t kMaxAllocationSize = (16ull << 20) - kMetaBlockSize;
 const size_t kMemorySize = (16ull << 22);
 
 // Starting address of our heap, root
-static MetaBlock* freeList = NULL;
-
-// Left Fence-Posts
-static MetaBlock* lp = NULL;
+static MetaBlock* freeListArray[8];
 
 // Align sizes for faster operations
 inline static size_t round_up(size_t size, size_t alignment) {
@@ -45,24 +42,16 @@ inline static size_t round_up(size_t size, size_t alignment) {
   return (size + mask) & ~mask;
 }
 
+/*
+* Given a (presumed) free block's LEFT metadata block, finds the pointer block
+*/
 PointerBlock* getPointers(MetaBlock* block) {
   if (block == NULL) {
     return NULL;
   }
-  // printf("PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP\n");
-
-  // printf("Finding Pointers for: %zu\n", (size_t) block);
-
-  size_t bsize = block->size;
-  assert(bsize > 0);
-
-  // printf("BlockSize: %zu\n", (size_t) bsize);
 
   // Go to end of block, take away MetaBlock and Pointer to get to start of Pointer.
   PointerBlock* outpp = (PointerBlock*) (((size_t) block) + (block->size - sizeof(MetaBlock) - sizeof(PointerBlock)));
-
-  // printf("Returning pointers at: %zu\n", (size_t) outpp);
-  // printf("PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP\n");
 
   return outpp;
 }
@@ -70,27 +59,24 @@ PointerBlock* getPointers(MetaBlock* block) {
 
 
 // Initialise free block for all space as a single free block
-MetaBlock* initialise() {
+MetaBlock* initialise(int m) {
   // printf("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n");
   // Allocating Initial Memory
-  MetaBlock* init = mmap(NULL, kMemorySize, 
+  MetaBlock* init = mmap(NULL, m*ARENA_SIZE, 
                         PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
 
 
-  lp = init;
-  // printf("Initialised Left FP at: %zu\n", (size_t) lp);
   // Init is left most, indicated by kMemorySize
   init->size = kMemorySize;
 
   // Go to the end, subtract Metablock for right_fp
-  MetaBlock* right_fp = (MetaBlock*) (((size_t) init) + kMemorySize - sizeof(MetaBlock));
+  MetaBlock* right_fp = (MetaBlock*) (((size_t) init) + m*ARENA_SIZE - sizeof(MetaBlock));
   right_fp->size = kMemorySize;
 
   // Freelist starts after left_fp
   init = (MetaBlock*) (((size_t) init) + sizeof(MetaBlock));
-  init->size = kMemorySize - 2*sizeof(MetaBlock);
-  // printf("Initialised FREELIST: %zu\n", (size_t) init);
+  init->size = m*ARENA_SIZE - 2*sizeof(MetaBlock);
 
   // Specify pointers, since it is free, both to NULL
   PointerBlock* init_ptr = getPointers(init);
@@ -100,72 +86,83 @@ MetaBlock* initialise() {
 
   // Add footer tag
   MetaBlock* freeListEnd = (MetaBlock*) (((size_t) init) + init->size - sizeof(MetaBlock));
-  freeListEnd->size = kMemorySize - 2*sizeof(MetaBlock);
+  freeListEnd->size = m*ARENA_SIZE - 2*sizeof(MetaBlock);
 
   // printf("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n");
   return init;
 }
 
+/*
+* Given the left metadata block, returns the right metadata block
+* Assumes that the block is unallocated
+*/
 MetaBlock* getRightMetaBlock(MetaBlock* block) {
   if (block == NULL) {
-    printf("The left boundary was null, so returning NULL\n");
     return NULL;
   }
-  // printf("RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\n");
-  // printf("The block for which we are finding the right boundary: %zu\n", (size_t) block);
 
-  size_t s = block->size;
-
-  // printf("The size of this block: %zu\n", s);
-
-  MetaBlock* new = (MetaBlock*) (((size_t) block) + s - sizeof(MetaBlock));
-
-  // printf("The Right Boundary: %zu\n", (size_t) new);
-  // printf("The current size of the right block: %zu\n", new->size);
-  // printf("RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\n");
+  // Adding size to go to end, then taking away MetaBlock size
+  MetaBlock* new = (MetaBlock*) (((size_t) block) + block->size - sizeof(MetaBlock));
   return new;
 }
 
-// Splits blocks into 2, updating size tag OF SECOND BLOCK ONLY
+/*
+* Splits a large block "curr" into 2 blocks, where "size" is the size of the
+* first block. Only updates the tags of the second block
+*/
 MetaBlock* splitBlock(MetaBlock* curr, size_t size) {
-  // printf("SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS\n");
-  // printf("Spliting block at %zu for size %zu\n", (size_t) curr, size);
   size_t size_before = curr->size;
 
+  // Finding second block
   MetaBlock* newBlock = (MetaBlock*) (((size_t) curr) + size);
 
+  // Updating boundary tags for second block only
   newBlock->size = size_before - size;
   MetaBlock* newBlockRight = getRightMetaBlock(newBlock);
   newBlockRight->size = size_before - size;
 
-  // printf("SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS\n");
-
   return newBlock;
 }
 
+int getIndex(size_t size) {
+  int out = 0;
+  size_t pow = 64;
+
+  while (pow <= size) {
+    pow *= 2;
+    out++;
+  }
+  if (out > 7) {
+    return 7;
+  }
+
+  return out;
+}
 
 
 void *my_malloc(size_t size)
 { 
-  // printf("-------------------------ENTERING MY MALLOC------------------\n");
-
-  if (freeList == NULL) {
-    freeList = initialise();
-  }
-
+  // Checking is size is valid
   if (size == 0 || size > kMaxAllocationSize) {
     return NULL;
   }
 
+  // Aligning and providing minimum for size
   size = round_up(size + kMetaBlockSize, kAlignment);
   if (size < 32) {
     size = 32;
   }
 
-  MetaBlock* curr = freeList;  
+  int idx = getIndex(size);
 
-  // printf("FreeList is at: %zu\n", (size_t) freeList);
-  // printf("Searching for size: %zu\n", size);
+
+  if (freeListArray[idx] == NULL) {
+    int multiple = size/ARENA_SIZE + 1;
+    freeListArray[idx] = initialise(multiple);
+  }
+
+  MetaBlock* curr = freeListArray[idx];
+
 
   // Keep going to next until big enough block is found
   while (curr != NULL && curr->size < size) {
@@ -186,7 +183,7 @@ void *my_malloc(size_t size)
     secondBlock = splitBlock(curr, size);
   }
 
-  if (curr == freeList) {
+  if (curr == freeListArray[idx]) {
     PointerBlock* currPointers = getPointers(curr);
     MetaBlock* newRoot = currPointers->next;
     PointerBlock* newRootPointers = getPointers(newRoot);
@@ -194,13 +191,13 @@ void *my_malloc(size_t size)
       if (newRootPointers != NULL) {
         newRootPointers->prev = secondBlock;
       }
-      freeList = secondBlock;
+      freeListArray[idx] = secondBlock;
     } else {
       if (newRootPointers != NULL) {
         newRootPointers->prev = NULL;
       }
-      freeList = newRoot;
-      if (freeList == NULL) {
+      freeListArray[idx] = newRoot;
+      if (freeListArray[idx] == NULL) {
         printf("We ran out of room!\n");
       }
     }
@@ -228,18 +225,16 @@ void *my_malloc(size_t size)
       }
     }
   }
-  // printf("FreeList is now: %zu\n", (size_t) freeList);
-  // printf("FreeListSize: %zu\n", freeList->size);
 
 
   curr->size = size;
   MetaBlock* currRight = getRightMetaBlock(curr);
-  // printf("The Right Boundary for Allocated block: %zu\n", (size_t) currRight);
+
   curr->size = size + 1;
   currRight->size = size + 1; //
   MetaBlock* out = (MetaBlock*) (((size_t) curr) + sizeof(MetaBlock));
-  // printf("Returning : %zu\n", (size_t) out);
-  // printf("-------------------------EXITING MYMALLOC------------------\n");
+
+
   return out;
 
 }
@@ -282,26 +277,29 @@ MetaBlock* coalesce(MetaBlock* curr) {
   return root;
 }
 
+bool isInitialised() {
+  for (int i = 0; i < 8; i++) {
+    if (freeListArray[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 
 void my_free(void *ptr)
 {
-  // printf("**************************ENTERING MYFREE**********************\n");
-  // printf("Seeking to free: %zu\n", (size_t) ptr);
-  if (ptr == NULL || freeList == NULL || !isAllocated(ptr)) {
+  if (ptr == NULL || !isInitialised() || !isAllocated(ptr)) {
     errno = EINVAL;
     fprintf(stderr, "my_free: %s\n", strerror(errno));
     return;
   }
 
   MetaBlock* toRemove = (MetaBlock*) (((size_t) ptr) - sizeof(MetaBlock));
-  
-  // assert(toRemove != freeList);
-
-  // printf("The block being cleared: %zu\n", (size_t) toRemove);
-  // printf("The block being cleared's size: %zu\n", toRemove->size);
 
   // clear out last bit
   toRemove->size = toRemove->size - 1;
+  int idx = getIndex(toRemove->size);
   MetaBlock* toRemoveRight = getRightMetaBlock(toRemove);
   toRemoveRight->size = toRemoveRight->size - 1;
 
@@ -309,15 +307,11 @@ void my_free(void *ptr)
 
   PointerBlock* toRemovePointers = getPointers(toRemove);
   toRemovePointers->prev = NULL;
-  toRemovePointers->next = freeList;
+  toRemovePointers->next = freeListArray[idx];
 
-  // printf("FreeList: %zu\n", (size_t) freeList);
-  PointerBlock* freeListPointers = getPointers(freeList);
-  // printf("FreeListPointers: %zu\n", (size_t) freeListPointers);
+  PointerBlock* freeListPointers = getPointers(freeListArray[idx]);
 
   freeListPointers->prev = toRemove;
 
-  freeList = toRemove;
-  // printf("FreeListSize After Freeing: %zu\n", freeList->size);
-  // printf("**************************EXITING MYFREE**********************\n");
+  freeListArray[idx] = toRemove;
 }
