@@ -132,6 +132,7 @@ int getIndex(size_t size) {
     pow *= 2;
     out++;
   }
+
   if (out > 7) {
     return 7;
   }
@@ -172,10 +173,18 @@ void *my_malloc(size_t size)
 
   // Traversed list, nothing found
   if (curr == NULL) {
-    return NULL;
+    int multiple = size/ARENA_SIZE + 1;
+    MetaBlock* toInsert = initialise(multiple);
+
+    PointerBlock* currentFreeListPtrs = getPointers(freeListArray[idx]);
+    PointerBlock* newlyAllocatedPtrs = getPointers(toInsert);
+    currentFreeListPtrs->prev = toInsert;
+    newlyAllocatedPtrs->next = freeListArray[idx];
+
+    freeListArray[idx] = toInsert;
+    curr = toInsert;
   }
 
-  // printf("Found block at: %zu\n", (size_t) curr);
 
   MetaBlock* secondBlock = NULL;
   // If needed, the split block will become new root
@@ -193,13 +202,16 @@ void *my_malloc(size_t size)
       }
       freeListArray[idx] = secondBlock;
     } else {
-      if (newRootPointers != NULL) {
+      if (newRoot == NULL) {
+        if (idx == 7) {
+          newRoot = initialise(2);
+        } else {
+          newRoot = initialise(1);
+        }
+      } else {
         newRootPointers->prev = NULL;
       }
       freeListArray[idx] = newRoot;
-      if (freeListArray[idx] == NULL) {
-        printf("We ran out of room!\n");
-      }
     }
   } else {
     PointerBlock* currPointers = getPointers(curr);
