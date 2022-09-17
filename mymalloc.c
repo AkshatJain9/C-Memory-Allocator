@@ -57,10 +57,10 @@ PointerBlock* getPointers(MetaBlock* block) {
 }
 
 
-
-// Initialise free block for all space as a single free block
+/*
+* Initialise free block for all space as a single free block
+*/
 MetaBlock* initialise(int m) {
-  // printf("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n");
   // Allocating Initial Memory
   MetaBlock* init = mmap(NULL, m*ARENA_SIZE, 
                         PROT_READ | PROT_WRITE,
@@ -88,7 +88,6 @@ MetaBlock* initialise(int m) {
   MetaBlock* freeListEnd = (MetaBlock*) (((size_t) init) + init->size - sizeof(MetaBlock));
   freeListEnd->size = m*ARENA_SIZE - 2*sizeof(MetaBlock);
 
-  // printf("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n");
   return init;
 }
 
@@ -124,15 +123,22 @@ MetaBlock* splitBlock(MetaBlock* curr, size_t size) {
   return newBlock;
 }
 
+/* 
+* Return the index of the freeList array representing which free list a block
+* will go in. Assumes a max size of 8 (index 7)
+*/
 int getIndex(size_t size) {
+  // First bin is for <64 bytes, store initial index for this
   int out = 0;
   size_t pow = 64;
 
+  // Each bin is determined by powers of two, so double and incr. out
   while (pow <= size) {
     pow *= 2;
     out++;
   }
 
+  // All allocation sizes >=4096 will go into last bin
   if (out > 7) {
     return 7;
   }
@@ -140,7 +146,9 @@ int getIndex(size_t size) {
   return out;
 }
 
-
+/*
+* Given a size, allocates memory using mmap and returns starting address
+*/
 void *my_malloc(size_t size)
 { 
   // Checking is size is valid
@@ -156,14 +164,13 @@ void *my_malloc(size_t size)
 
   int idx = getIndex(size);
 
-
+  // If the relevant free list doesn't exist, initialise it. x2+ if idx=7
   if (freeListArray[idx] == NULL) {
     int multiple = size/ARENA_SIZE + 1;
     freeListArray[idx] = initialise(multiple);
   }
 
   MetaBlock* curr = freeListArray[idx];
-
 
   // Keep going to next until big enough block is found
   while (curr != NULL && curr->size < size) {
@@ -173,54 +180,70 @@ void *my_malloc(size_t size)
 
   // Traversed list, nothing found
   if (curr == NULL) {
+    // Request additional memory from OS if we have no room
     int multiple = size/ARENA_SIZE + 1;
     MetaBlock* toInsert = initialise(multiple);
 
+    // Get pointer of current head a newly allocated blocks
     PointerBlock* currentFreeListPtrs = getPointers(freeListArray[idx]);
     PointerBlock* newlyAllocatedPtrs = getPointers(toInsert);
+
+    // Map relationship, making newly mapped area new root
     currentFreeListPtrs->prev = toInsert;
     newlyAllocatedPtrs->next = freeListArray[idx];
 
+    // Store in FreeList array and continue with my_malloc
     freeListArray[idx] = toInsert;
     curr = toInsert;
   }
 
-
   MetaBlock* secondBlock = NULL;
+
   // If needed, the split block will become new root
   if (curr->size >= size + kPointerBlockSize + kMinAllocationSize) {
     secondBlock = splitBlock(curr, size);
   }
 
+  // Calculating new root and/or updating freelist pointers
   if (curr == freeListArray[idx]) {
+    // If the first block in free list was deemed appropriate, we need new root
     PointerBlock* currPointers = getPointers(curr);
     MetaBlock* newRoot = currPointers->next;
     PointerBlock* newRootPointers = getPointers(newRoot);
+    // If there is a split block, we can just make that the root
     if (secondBlock != NULL) {
       if (newRootPointers != NULL) {
         newRootPointers->prev = secondBlock;
       }
       freeListArray[idx] = secondBlock;
     } else {
+      // Otherwise we need to find another block
       if (newRoot == NULL) {
+        // If there is no "next" element, then we need to make one
+        // If idx is 7, we need at least 2*4096 for any allocation otherwise, 1x
         if (idx == 7) {
           newRoot = initialise(2);
         } else {
           newRoot = initialise(1);
         }
       } else {
+        // Otherwise, simply point the next block's pointers to NULL
         newRootPointers->prev = NULL;
       }
+      // And in either case, that becomes the new root
       freeListArray[idx] = newRoot;
     }
   } else {
+    // In the case that the found block isnt the root, get the next and prev blocks
     PointerBlock* currPointers = getPointers(curr);
     MetaBlock* nextNode = currPointers->next;
     MetaBlock* prevNode = currPointers->prev;
 
+    // Get the pointers of the next and prev blocks
     PointerBlock* nextNodePointers = getPointers(nextNode);
     PointerBlock* prevNodePointers = getPointers(prevNode);
 
+    // If block was split, we update pointers to point to this
     if (secondBlock != NULL) {
       if (nextNodePointers != NULL) {
         nextNodePointers->prev = secondBlock;
@@ -229,6 +252,7 @@ void *my_malloc(size_t size)
         prevNodePointers->next = secondBlock;
       }
     } else {
+      // Otherwise, the next and prev now point to each other
       if (nextNodePointers != NULL) {
         nextNodePointers->prev = prevNode;
       }
@@ -238,19 +262,22 @@ void *my_malloc(size_t size)
     }
   }
 
-
+  // Set size, so we can go to right block properly
   curr->size = size;
-  MetaBlock* currRight = getRightMetaBlock(curr);
 
+  // Set allocated bit on both header and footer boundary tags
+  MetaBlock* currRight = getRightMetaBlock(curr);
   curr->size = size + 1;
-  currRight->size = size + 1; //
+  currRight->size = size + 1;
+
   MetaBlock* out = (MetaBlock*) (((size_t) curr) + sizeof(MetaBlock));
 
-
   return out;
-
 }
 
+/*
+* Assumes pointer represents start of block, checks if allocation bit is set
+*/
 bool isAllocated(void* ptr) {
   MetaBlock* toRemove = (MetaBlock*) (((size_t) ptr) - sizeof(MetaBlock));
   return (toRemove->size % 2 == 1);
@@ -289,6 +316,10 @@ MetaBlock* coalesce(MetaBlock* curr) {
   return root;
 }
 
+
+/*
+* Checks if any allocations have actually been done, for free to continue
+*/
 bool isInitialised() {
   for (int i = 0; i < 8; i++) {
     if (freeListArray[i]) {
@@ -299,30 +330,40 @@ bool isInitialised() {
 }
 
 
+/*
+* Given a pointer, assumed to be start of allocated block, frees that block
+* and re-inserts it into the relevant free-list
+*/
 void my_free(void *ptr)
 {
+  // If pointer is NULL/allocated, or nothing has been allocated, throw error
   if (ptr == NULL || !isInitialised() || !isAllocated(ptr)) {
     errno = EINVAL;
     fprintf(stderr, "my_free: %s\n", strerror(errno));
     return;
   }
 
+  // Block to be removed if criteria is met
   MetaBlock* toRemove = (MetaBlock*) (((size_t) ptr) - sizeof(MetaBlock));
 
-  // clear out last bit
+  // Clear out last bit to properly get index and right block
   toRemove->size = toRemove->size - 1;
+
+  // Get index of freeList and Right Block, update right block to be unallocated
   int idx = getIndex(toRemove->size);
   MetaBlock* toRemoveRight = getRightMetaBlock(toRemove);
   toRemoveRight->size = toRemoveRight->size - 1;
 
+  // Coalesce, updating new root among 3 coninuous blocks
   toRemove = coalesce(toRemove);
 
+  // Update pointers for block
   PointerBlock* toRemovePointers = getPointers(toRemove);
   toRemovePointers->prev = NULL;
   toRemovePointers->next = freeListArray[idx];
 
+  // Update freeList, so toRemove is now root
   PointerBlock* freeListPointers = getPointers(freeListArray[idx]);
-
   freeListPointers->prev = toRemove;
 
   freeListArray[idx] = toRemove;
