@@ -158,8 +158,8 @@ void *my_malloc(size_t size)
 
   // Aligning and providing minimum for size
   size = round_up(size + kMetaBlockSize, kAlignment);
-  if (size < 32) {
-    size = 32;
+  if (size < 40) {
+    size = 40;
   }
 
   int idx = getIndex(size);
@@ -286,9 +286,9 @@ bool isAllocated(void* ptr) {
 /*
 * Coalese Function, takes in address of Central MetaBlock, then 
 * checks left & right neighbours for combination
-* Does NOT update the pointers, only header/footer tags
+* Updates the pointers a free-list as well if needed
 */
-MetaBlock* coalesce(MetaBlock* curr) {
+void coalesce(MetaBlock* curr, int idx) {
   // Obtaining start address of adjacent MetaBlocks
   MetaBlock* leftNeighbour = (MetaBlock*) (((size_t) curr) - sizeof(MetaBlock));
   MetaBlock* rightNeighbour = (MetaBlock*) (((size_t) curr) + curr->size);
@@ -297,23 +297,110 @@ MetaBlock* coalesce(MetaBlock* curr) {
   MetaBlock* root = curr;
   size_t newSize = curr->size;
 
+  // Keeping track of pointers in case they need to be shuffled around
+  PointerBlock* leftPointers = NULL;
+  PointerBlock* rightPointers = NULL;
+
   // Checking if NOT fence post and unallocated
   if (rightNeighbour->size < kMemorySize && !(rightNeighbour->size & 1)) {
     newSize += rightNeighbour->size;
+    rightPointers = getPointers(rightNeighbour);
   }
 
   // Reassigning left root if left block is free
   if (leftNeighbour->size < kMemorySize && !(leftNeighbour->size & 1)) {
     newSize += leftNeighbour->size;
-    root = (MetaBlock*) (((size_t) leftNeighbour) - leftNeighbour->size + sizeof(MetaBlock));
+    MetaBlock* leftNeighbourHeader = (MetaBlock*) (((size_t) leftNeighbour) - leftNeighbour->size + sizeof(MetaBlock));
+    leftPointers = getPointers(leftNeighbourHeader);
+
+    root = leftNeighbourHeader;
   }
 
-  // Updating Boundary Tags
+  // Now handling the 4 cases we have in coalescing
   root->size = newSize;
   MetaBlock* coalescedRight = getRightMetaBlock(root);
   coalescedRight->size = newSize;
+  
+  // If both left and right were allocated, insert block at the start of freelist
+  if ((!leftPointers && !rightPointers)) {
+    // Update pointers to match format of freelist root
+    PointerBlock* rootPointers = getPointers(root);
+    rootPointers->prev = NULL;
+    rootPointers->next = freeListArray[idx];
 
-  return root;
+    // Update freeList, so toRemove is now root
+    PointerBlock* freeListPointers = getPointers(freeListArray[idx]);
+    freeListPointers->prev = root;
+
+    freeListArray[idx] = root;
+    return;
+  }
+
+  // If left block ONLY was free, simply copy over its pointers to current block
+  if (leftPointers && !rightPointers) {
+    // Copy over pointers to root
+    PointerBlock* rootPointers = getPointers(root);
+    rootPointers->prev = leftPointers->prev;
+    rootPointers->next = leftPointers->next;
+
+    return;
+  }
+
+  // If right block ONLY was free, copy over pointers AND update adjacent pointers
+  if (!leftPointers && rightPointers) {
+    // Copy over pointes to root
+    PointerBlock* rootPointers = getPointers(root);
+    rootPointers->prev = rightPointers->prev;
+    rootPointers->next = rightPointers->next;
+
+    // Get the pointer blocks of next and prev in free list
+    PointerBlock* rightPrevPointers = getPointers(rightPointers->prev);
+    PointerBlock* rightNextPointers = getPointers(rightPointers->next);
+
+    // Make sure they point to the new root (which is more left) now
+    if (rightPrevPointers) {
+      rightPrevPointers->next = root;
+    }
+
+    if (rightNextPointers) {
+      rightNextPointers->prev = root;
+    }
+
+    // If this block was the freelist, we also need to update that
+    if (rightNeighbour == freeListArray[idx]) {
+      freeListArray[idx] = root;
+    }
+
+    return;
+  }
+
+  // Now in the case that both right and left blocks were free
+
+  // We decide to copy over left block pointers
+  PointerBlock* rootPointers = getPointers(root);
+  rootPointers->prev = leftPointers->prev;
+  rootPointers->next = leftPointers->next;
+
+  // Get pointers of right block
+  MetaBlock* rightPrev = rightPointers->prev;
+  MetaBlock* rightNext = rightPointers->next;
+
+  // We DELETE the right block from the Free-List, since we will already have it
+  if (rightPrev != NULL) {
+    PointerBlock* temp = getPointers(rightPrev);
+    temp->next = rightNext;
+  }
+
+  if (rightNext) {
+    PointerBlock* temp2 = getPointers(rightNext);
+    temp2->prev = rightPrev;
+  }
+
+  // Again, if this deleted node was the root, we update the root
+  if (rightNeighbour == freeListArray[idx]) {
+      freeListArray[idx] = root;
+  }
+
 }
 
 
@@ -355,16 +442,5 @@ void my_free(void *ptr)
   toRemoveRight->size = toRemoveRight->size - 1;
 
   // Coalesce, updating new root among 3 coninuous blocks
-  toRemove = coalesce(toRemove);
-
-  // Update pointers for block
-  PointerBlock* toRemovePointers = getPointers(toRemove);
-  toRemovePointers->prev = NULL;
-  toRemovePointers->next = freeListArray[idx];
-
-  // Update freeList, so toRemove is now root
-  PointerBlock* freeListPointers = getPointers(freeListArray[idx]);
-  freeListPointers->prev = toRemove;
-
-  freeListArray[idx] = toRemove;
+  coalesce(toRemove, idx);
 }
