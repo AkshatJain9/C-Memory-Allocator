@@ -30,7 +30,7 @@ const size_t kMetaBlockSize = kPointerBlockSize - sizeof(PointerBlock);
 // Maximum allocation size (16 MB)
 const size_t kMaxAllocationSize = (16ull << 20) - kMetaBlockSize;
 
-// Memory size that is mmapped (64 MB)
+// Dummy value for size used in Fence-Posts
 const size_t kMemorySize = (16ull << 22);
 
 // Starting address of our heap, root
@@ -56,7 +56,6 @@ PointerBlock* getPointers(MetaBlock* block) {
   return outpp;
 }
 
-
 /*
 * Initialise free block for all space as a single free block
 */
@@ -66,6 +65,9 @@ MetaBlock* initialise(int m) {
                         PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
 
+  if (init == NULL) {
+    return NULL;
+  }
 
   // Init is left most, indicated by kMemorySize
   init->size = kMemorySize;
@@ -168,6 +170,10 @@ void *my_malloc(size_t size)
   if (freeListArray[idx] == NULL) {
     int multiple = size/ARENA_SIZE + 1;
     freeListArray[idx] = initialise(multiple);
+    if (freeListArray[idx] == NULL) {
+      errno = ENOMEM;
+      exit(1);
+    }
   }
 
   MetaBlock* curr = freeListArray[idx];
@@ -427,7 +433,7 @@ void my_free(void *ptr)
   if (ptr == NULL || !isInitialised() || !isAllocated(ptr)) {
     errno = EINVAL;
     fprintf(stderr, "my_free: %s\n", strerror(errno));
-    return;
+    exit(1);
   }
 
   // Block to be removed if criteria is met
