@@ -134,15 +134,10 @@ int getIndex(size_t size) {
   int out = 0;
   size_t pow = 64;
 
-  // Each bin is determined by powers of two, so double and incr. out
-  while (pow <= size) {
+  // Each bin is determined by powers of two, so double and incr. Limit to 4096
+  while (out < 7 && pow <= size) {
     pow *= 2;
     out++;
-  }
-
-  // All allocation sizes >=4096 will go into last bin
-  if (out > 7) {
-    return 7;
   }
 
   return out;
@@ -160,8 +155,8 @@ void *my_malloc(size_t size)
 
   // Aligning and providing minimum for size
   size = round_up(size + kMetaBlockSize, kAlignment);
-  if (size < 40) {
-    size = 40;
+  if (size < kPointerBlockSize) {
+    size = kPointerBlockSize;
   }
 
   int idx = getIndex(size);
@@ -277,6 +272,8 @@ void *my_malloc(size_t size)
   currRight->size = size + 1;
 
   MetaBlock* out = (MetaBlock*) (((size_t) curr) + sizeof(MetaBlock));
+
+  memset(out, 0, size - kMetaBlockSize);
 
   return out;
 }
