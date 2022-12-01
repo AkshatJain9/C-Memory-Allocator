@@ -426,8 +426,11 @@ bool isInitialised() {
 */
 void my_free(void *ptr)
 {
+  if (ptr == NULL) {
+    return;
+  }
   // If pointer is NULL/allocated, or nothing has been allocated, throw error
-  if (ptr == NULL || !isInitialised() || !isAllocated(ptr)) {
+  if (!isInitialised() || !isAllocated(ptr)) {
     errno = EINVAL;
     fprintf(stderr, "my_free: %s\n", strerror(errno));
     exit(1);
